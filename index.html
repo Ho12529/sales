@@ -17,7 +17,7 @@ body{background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-syste
 header{padding:14px 16px 6px;font-weight:700;font-size:20px}
 main{flex:1;overflow-y:auto;padding:8px 16px 90px}
 nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
-nav button{flex:1;border:0;background:none;color:var(--mute);padding:12px 4px;font:inherit;font-size:14px}
+nav button{flex:1;border:0;background:none;color:var(--mute);padding:12px 2px;font:inherit;font-size:13px}
 nav button.on{color:var(--brand);font-weight:700;box-shadow:inset 0 3px 0 var(--brand)}
 label{display:block;margin:12px 0 4px;color:var(--mute);font-size:14px}
 input,select,textarea{width:100%;padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit}
@@ -26,13 +26,17 @@ button.g{background:none;color:var(--brand);border:1px solid var(--line);border-
 button.r{color:var(--bad)}
 .row{display:flex;gap:8px;align-items:center}
 .row>*{flex:1}.row>.fix{flex:none}
+.wrap{flex-wrap:wrap}
 .box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin:10px 0}
 .li{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
 .li:last-child{border:0}
 .mute{color:var(--mute);font-size:14px}
 .tot{font-size:22px;font-weight:700}
-.tag{font-size:13px;font-weight:700}.paid{color:var(--brand)}.unpaid{color:var(--warn)}
+.tag{font-size:13px;font-weight:700}.s-Paid{color:var(--brand)}.s-Part{color:var(--warn)}.s-Unpaid{color:var(--bad)}
 .empty{text-align:center;color:var(--mute);padding:30px 10px}
+.chips{display:flex;gap:6px;overflow-x:auto;margin:8px 0}
+.chip{flex:none;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:20px;padding:6px 14px;font:inherit;font-size:14px}
+.chip.on{background:var(--brand);color:var(--onbrand);border-color:var(--brand)}
 #modal{display:none;position:fixed;inset:0;background:var(--bg);overflow-y:auto;padding:calc(12px + env(safe-area-inset-top,0px)) 16px 24px;z-index:5}
 #inv{background:#fff;color:#111;border-radius:10px;padding:18px;margin:12px 0}
 #inv table{width:100%;border-collapse:collapse;margin:12px 0}
@@ -58,21 +62,31 @@ const DB={
   async get(k,d){const db=await this.open();return new Promise(res=>{const q=db.transaction("kv").objectStore("kv").get(k);q.onsuccess=()=>res(q.result===undefined?d:q.result);q.onerror=()=>res(d)})},
   async set(k,v){const db=await this.open();return new Promise((res,rej)=>{const t=db.transaction("kv","readwrite");t.objectStore("kv").put(v,k);t.oncomplete=res;t.onerror=()=>rej(t.error)})}
 };
-const S={products:[],invoices:[],settings:{name:"My Shop",info:"",cur:"$",tax:0,next:1}};
-let tab="sell",cart=[],draft={cust:"",paid:"Paid"};
+const S={products:[],invoices:[],settings:{name:"My Shop",info:"",bank:"",cur:"$",tax:0,next:1}};
+const newDraft=()=>({cust:"",phone:"",disc:"",paid:"",method:"Cash",due:"",note:""});
+let tab="sell",cart=[],draft=newDraft(),invF="all",invQ="",CL=[];
 const save=()=>Promise.all([DB.set("products",S.products),DB.set("invoices",S.invoices),DB.set("settings",S.settings)]);
 if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
 
 /* ---------- Helpers ---------- */
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const fmt=n=>S.settings.cur+(+n||0).toFixed(2);
+const fmt=n=>S.settings.cur+(+n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const dstr=iso=>new Date(iso).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
-const totals=(items)=>{const sub=items.reduce((a,i)=>a+i.p*i.q,0),tax=sub*(+S.settings.tax||0)/100;return{sub,tax,total:sub+tax}};
+const isToday=iso=>new Date(iso).toDateString()===new Date().toDateString();
 const pad=n=>String(n).padStart(4,"0");
+const totals=(items,disc)=>{const sub=items.reduce((a,i)=>a+i.p*i.q,0),d=Math.min(+disc||0,sub),after=sub-d,tax=after*(+S.settings.tax||0)/100;return{sub,disc:d,tax,total:after+tax}};
+const paidOf=i=>i.payments.reduce((a,p)=>a+p.amt,0);
+const balOf=i=>Math.max(0,i.total-paidOf(i));
+const statusOf=i=>balOf(i)<0.005?"Paid":paidOf(i)>0?"Part paid":"Unpaid";
+const sCls=s=>"s-"+s.split(" ")[0];
+function mig(i){ // upgrade invoices saved by the first version
+  if(!i.payments)i.payments=i.paid==="Paid"?[{amt:i.total,date:i.date,method:"Cash"}]:[];
+  i.disc=i.disc||0;i.phone=i.phone||"";i.due=i.due||"";i.note=i.note||"";return i;
+}
 
 /* ---------- Views ---------- */
-const TABS=[["sell","New sale"],["inv","Invoices"],["prod","Products"],["set","Settings"]];
+const TABS=[["sell","Sell"],["inv","Invoices"],["cust","Customers"],["prod","Products"],["set","Settings"]];
 function render(){
   $("nav").innerHTML=TABS.map(([k,l])=>`<button class="${k===tab?"on":""}" onclick="go('${k}')">${l}</button>`).join("");
   $("title").textContent=S.settings.name;
@@ -80,14 +94,26 @@ function render(){
 }
 function go(t){tab=t;render();$("main").scrollTop=0}
 
+function sumHtml(){
+  const t=totals(cart,draft.disc),paid=Math.min(+draft.paid||0,t.total),bal=t.total-paid;
+  return `<div class="li"><span>Subtotal</span><span>${fmt(t.sub)}</span></div>
+  ${t.disc?`<div class="li"><span>Discount</span><span>−${fmt(t.disc)}</span></div>`:""}
+  ${t.tax?`<div class="li"><span>Tax (${S.settings.tax}%)</span><span>${fmt(t.tax)}</span></div>`:""}
+  <div class="li"><span class="tot">Total</span><span class="tot">${fmt(t.total)}</span></div>
+  <div class="li"><span>Paid now</span><span>${fmt(paid)}</span></div>
+  <div class="li"><b>Balance remaining</b><b class="${bal>0.005?"s-Unpaid":"s-Paid"}">${fmt(bal)}</b></div>`;
+}
+function upd(k,v){draft[k]=v;$("sumbox").innerHTML=sumHtml()}
+function quickPay(f){const t=totals(cart,draft.disc);draft.paid=f?+(t.total*f).toFixed(2):"";render()}
+
 const views={
 sell(){
-  const t=totals(cart);
   const custs=[...new Set(S.invoices.map(i=>i.cust))].map(c=>`<option value="${esc(c)}">`).join("");
   const opts=S.products.map(p=>`<option value="${p.id}">${esc(p.name)} (${fmt(p.price)})</option>`).join("");
+  const M=["Cash","Transfer","Card","Other"];
   return `
-  <label>Customer</label>
-  <input id="cust" list="cl" placeholder="Walk-in customer" value="${esc(draft.cust)}" oninput="draft.cust=this.value">
+  <div class="row"><div><label>Customer</label><input id="cust" list="cl" placeholder="Walk-in customer" value="${esc(draft.cust)}" oninput="draft.cust=this.value"></div>
+  <div><label>Phone (with country code)</label><input type="tel" placeholder="optional" value="${esc(draft.phone)}" oninput="draft.phone=this.value"></div></div>
   <datalist id="cl">${custs}</datalist>
   <label>Add item</label>
   <div class="row"><select id="ps">${opts}<option value="custom">Custom item…</option></select>
@@ -95,19 +121,37 @@ sell(){
   <button class="b fix" onclick="addItem()">Add</button></div>
   <div class="box">${cart.length?cart.map((i,x)=>`<div class="li"><div>${esc(i.n)}<div class="mute">${i.q} × ${fmt(i.p)}</div></div>
     <div>${fmt(i.p*i.q)} <button class="g r" onclick="cart.splice(${x},1);render()">✕</button></div></div>`).join(""):`<div class="empty">No items yet. Choose a product and tap Add.</div>`}</div>
-  <div class="li"><span>Subtotal</span><span>${fmt(t.sub)}</span></div>
-  ${+S.settings.tax?`<div class="li"><span>Tax (${S.settings.tax}%)</span><span>${fmt(t.tax)}</span></div>`:""}
-  <div class="li"><span class="tot">Total</span><span class="tot">${fmt(t.total)}</span></div>
-  <label>Payment</label>
-  <select onchange="draft.paid=this.value"><option ${draft.paid==="Paid"?"selected":""}>Paid</option><option ${draft.paid==="Unpaid"?"selected":""}>Unpaid</option></select>
-  <p><button class="b" style="width:100%" onclick="saveInvoice()">Save invoice</button></p>`;
+  <label>Discount (amount)</label><input type="number" inputmode="decimal" step="any" value="${esc(draft.disc)}" oninput="upd('disc',this.value)">
+  <label>Deposit / amount paid now</label>
+  <input type="number" inputmode="decimal" step="any" placeholder="0" value="${esc(draft.paid)}" oninput="upd('paid',this.value)">
+  <div class="chips"><button class="chip" onclick="quickPay(0)">No deposit</button><button class="chip" onclick="quickPay(.5)">50%</button><button class="chip" onclick="quickPay(1)">Pay in full</button></div>
+  <div class="row"><div><label>Payment method</label><select onchange="draft.method=this.value">${M.map(m=>`<option ${m===draft.method?"selected":""}>${m}</option>`).join("")}</select></div>
+  <div><label>Balance due date</label><input type="date" value="${esc(draft.due)}" onchange="draft.due=this.value"></div></div>
+  <label>Note on invoice</label><input placeholder="optional" value="${esc(draft.note)}" oninput="draft.note=this.value">
+  <div class="box" id="sumbox" style="margin-top:14px">${sumHtml()}</div>
+  <button class="b" style="width:100%" onclick="saveInvoice()">Save invoice</button>`;
 },
 inv(){
-  if(!S.invoices.length)return `<div class="empty">No invoices yet. Make your first sale on the New sale tab.</div>`;
-  const paid=S.invoices.filter(i=>i.paid==="Paid").reduce((a,i)=>a+i.total,0),due=S.invoices.filter(i=>i.paid!=="Paid").reduce((a,i)=>a+i.total,0);
-  return `<div class="box row"><div><div class="mute">Paid</div><div class="tot">${fmt(paid)}</div></div><div><div class="mute">Unpaid</div><div class="tot" style="color:var(--warn)">${fmt(due)}</div></div></div>
-  <input placeholder="Search customer or number" oninput="filterInv(this.value)" style="margin-bottom:6px">
-  <div class="box" id="invlist">${invList("")}</div>`;
+  const A=S.invoices;
+  if(!A.length)return `<div class="empty">No invoices yet. Make your first sale on the Sell tab.</div>`;
+  const out=A.reduce((a,i)=>a+balOf(i),0);
+  const ts=A.filter(i=>isToday(i.date)).reduce((a,i)=>a+i.total,0);
+  const tc=A.flatMap(i=>i.payments).filter(p=>isToday(p.date)).reduce((a,p)=>a+p.amt,0);
+  const F=[["all","All"],["Unpaid","Unpaid"],["Part paid","Part paid"],["Paid","Paid"]];
+  return `<div class="box"><div class="row"><div><div class="mute">Sales today</div><b>${fmt(ts)}</b></div><div><div class="mute">Cash received today</div><b>${fmt(tc)}</b></div></div>
+  <div class="li" style="margin-top:8px"><span>Total owed to you</span><b class="s-Unpaid">${fmt(out)}</b></div></div>
+  <div class="chips">${F.map(([k,l])=>`<button class="chip ${invF===k?"on":""}" onclick="invF='${k}';render()">${l}</button>`).join("")}</div>
+  <input placeholder="Search customer or invoice number" value="${esc(invQ)}" oninput="invQ=this.value;$('invlist').innerHTML=invList()">
+  <div class="box" id="invlist">${invList()}</div>`;
+},
+cust(){
+  const m={};
+  S.invoices.forEach(i=>{const c=m[i.cust]||(m[i.cust]={n:i.cust,t:0,p:0,c:0});c.t+=i.total;c.p+=paidOf(i);c.c++});
+  CL=Object.values(m).sort((a,b)=>(b.t-b.p)-(a.t-a.p));
+  if(!CL.length)return `<div class="empty">Customers appear here after your first invoice.</div>`;
+  return `<p class="mute">Sorted by who owes you the most. Tap a customer to see their invoices.</p><div class="box">`+
+  CL.map((c,x)=>`<div class="li" onclick="custGo(${x})" style="cursor:pointer"><div>${esc(c.n)}<div class="mute">${c.c} invoice${c.c>1?"s":""} · bought ${fmt(c.t)}</div></div>
+  <div style="text-align:right"><div class="tag ${c.t-c.p>0.005?"s-Unpaid":"s-Paid"}">${c.t-c.p>0.005?"Owes "+fmt(c.t-c.p):"Cleared"}</div></div></div>`).join("")+`</div>`;
 },
 prod(){
   return `<div class="box"><label style="margin-top:0">Product name</label><input id="pn">
@@ -120,6 +164,7 @@ prod(){
 set(){const s=S.settings;return `
   <label>Business name</label><input value="${esc(s.name)}" onchange="S.settings.name=this.value;save();render()">
   <label>Address, phone, tax ID (shown on invoices)</label><textarea rows="3" onchange="S.settings.info=this.value;save()">${esc(s.info)}</textarea>
+  <label>Bank / payment details (shown on invoices)</label><textarea rows="2" onchange="S.settings.bank=this.value;save()">${esc(s.bank)}</textarea>
   <div class="row"><div><label>Currency symbol</label><input value="${esc(s.cur)}" onchange="S.settings.cur=this.value;save()"></div>
   <div><label>Tax %</label><input type="number" inputmode="decimal" step="any" value="${s.tax}" onchange="S.settings.tax=+this.value||0;save()"></div>
   <div><label>Next invoice no.</label><input type="number" value="${s.next}" onchange="S.settings.next=+this.value||1;save()"></div></div>
@@ -127,13 +172,13 @@ set(){const s=S.settings;return `
   <div class="row"><button class="b" onclick="backup()">Save backup</button><button class="g" onclick="$('restore').click()">Restore backup</button></div></div>`;}
 };
 
-function invList(q){
-  q=q.toLowerCase();
-  const l=S.invoices.slice().reverse().filter(i=>!q||i.cust.toLowerCase().includes(q)||pad(i.no).includes(q));
-  return l.length?l.map(i=>`<div class="li" onclick="showInv(${i.no})" style="cursor:pointer"><div>#${pad(i.no)} · ${esc(i.cust)}<div class="mute">${dstr(i.date)}</div></div>
-  <div style="text-align:right">${fmt(i.total)}<div class="tag ${i.paid==="Paid"?"paid":"unpaid"}">${i.paid}</div></div></div>`).join(""):`<div class="empty">No matches.</div>`;
+function invList(){
+  const q=invQ.toLowerCase();
+  const l=S.invoices.slice().reverse().filter(i=>(invF==="all"||statusOf(i)===invF)&&(!q||i.cust.toLowerCase().includes(q)||pad(i.no).includes(q)));
+  return l.length?l.map(i=>{const st=statusOf(i),b=balOf(i);return `<div class="li" onclick="showInv(${i.no})" style="cursor:pointer"><div>#${pad(i.no)} · ${esc(i.cust)}<div class="mute">${dstr(i.date)}${b>0&&i.due?" · due "+dstr(i.due):""}</div></div>
+  <div style="text-align:right">${fmt(i.total)}<div class="tag ${sCls(st)}">${st}${b>0.005?" · owes "+fmt(b):""}</div></div></div>`}).join(""):`<div class="empty">No invoices match.</div>`;
 }
-function filterInv(v){$("invlist").innerHTML=invList(v)}
+function custGo(x){invQ=CL[x].n;invF="all";go("inv")}
 
 /* ---------- Actions ---------- */
 function addItem(){
@@ -151,10 +196,12 @@ function addItem(){
 }
 async function saveInvoice(){
   if(!cart.length){alert("Add at least one item first.");return}
-  const t=totals(cart);
-  const inv={no:S.settings.next++,date:new Date().toISOString(),cust:draft.cust.trim()||"Walk-in customer",items:cart,sub:t.sub,tax:t.tax,taxRate:+S.settings.tax||0,total:t.total,paid:draft.paid};
+  const t=totals(cart,draft.disc),pay=Math.min(+draft.paid||0,t.total);
+  const now=new Date().toISOString();
+  const inv={no:S.settings.next++,date:now,cust:draft.cust.trim()||"Walk-in customer",phone:draft.phone.trim(),items:cart,sub:t.sub,disc:t.disc,tax:t.tax,taxRate:+S.settings.tax||0,total:t.total,
+    due:draft.due,note:draft.note.trim(),payments:pay>0?[{amt:pay,date:now,method:draft.method}]:[]};
   cart.forEach(i=>{const p=S.products.find(x=>x.id===i.id);if(p&&p.stock!=="")p.stock=Math.max(0,p.stock-i.q)});
-  S.invoices.push(inv);cart=[];draft={cust:"",paid:"Paid"};
+  S.invoices.push(inv);cart=[];draft=newDraft();
   await save();render();showInv(inv.no);
 }
 function addProduct(){
@@ -171,43 +218,73 @@ function editProduct(id){
 }
 function delProduct(id){if(confirm("Delete this product? Past invoices are not affected.")){S.products=S.products.filter(p=>p.id!==id);save();render()}}
 
-/* ---------- Invoice view ---------- */
+/* ---------- Invoice view & payments ---------- */
 function showInv(no){
   const i=S.invoices.find(x=>x.no===no);if(!i)return;
-  const s=S.settings;
+  const s=S.settings,st=statusOf(i),b=balOf(i),paid=paidOf(i);
   $("modal").innerHTML=`
-  <div class="row noprint"><button class="g" onclick="closeInv()">Close</button><button class="b" onclick="window.print()">Print / PDF</button><button class="g" onclick="shareInv(${no})">Share</button></div>
+  <div class="row noprint"><button class="g" onclick="closeInv()">Close</button><button class="b" onclick="window.print()">Print / PDF</button></div>
   <div id="inv">
     <div style="display:flex;justify-content:space-between;gap:10px"><div><b style="font-size:20px">${esc(s.name)}</b><div style="white-space:pre-line;font-size:14px;color:#555">${esc(s.info)}</div></div>
     <div style="text-align:right"><b>Invoice #${pad(i.no)}</b><div style="font-size:14px;color:#555">${dstr(i.date)}</div></div></div>
-    <p style="margin:14px 0 0"><span style="color:#555;font-size:14px">Billed to</span><br><b>${esc(i.cust)}</b></p>
+    <p style="margin:14px 0 0"><span style="color:#555;font-size:14px">Billed to</span><br><b>${esc(i.cust)}</b>${i.phone?`<br><span style="font-size:14px;color:#555">${esc(i.phone)}</span>`:""}</p>
     <table><tr><th>Item</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Amount</th></tr>
     ${i.items.map(x=>`<tr><td>${esc(x.n)}</td><td class="n">${x.q}</td><td class="n">${fmt(x.p)}</td><td class="n">${fmt(x.p*x.q)}</td></tr>`).join("")}</table>
     <div class="s"><span>Subtotal</span><span>${fmt(i.sub)}</span></div>
+    ${i.disc?`<div class="s"><span>Discount</span><span>−${fmt(i.disc)}</span></div>`:""}
     ${i.taxRate?`<div class="s"><span>Tax (${i.taxRate}%)</span><span>${fmt(i.tax)}</span></div>`:""}
-    <div class="s" style="font-size:20px;font-weight:700;border-top:2px solid #111;margin-top:4px;padding-top:6px"><span>Total</span><span>${fmt(i.total)}</span></div>
-    <p style="margin-top:14px"><b>Status: ${i.paid}</b></p>
+    <div class="s" style="font-size:19px;font-weight:700;border-top:2px solid #111;margin-top:4px;padding-top:6px"><span>Total</span><span>${fmt(i.total)}</span></div>
+    ${i.payments.length?`<div style="margin-top:12px;font-size:14px;color:#555">Payments received</div>`+i.payments.map((p,x)=>`<div class="s"><span>${dstr(p.date)} · ${esc(p.method)} <button class="noprint" style="border:0;background:none;color:#b91c1c" onclick="delPay(${i.no},${x})">✕</button></span><span>${fmt(p.amt)}</span></div>`).join("")+`<div class="s"><b>Total paid</b><b>${fmt(paid)}</b></div>`:""}
+    <div class="s" style="font-size:19px;font-weight:700;border-top:2px solid #111;margin-top:6px;padding-top:6px;color:${b>0.005?"#b91c1c":"#0f766e"}"><span>${b>0.005?"Balance due":"Fully paid"}</span><span>${fmt(b)}</span></div>
+    ${b>0.005&&i.due?`<div style="font-size:14px;margin-top:4px">Please pay by ${dstr(i.due)}</div>`:""}
+    ${i.note?`<p style="margin:12px 0 0;font-size:14px">${esc(i.note)}</p>`:""}
+    ${s.bank?`<p style="margin:12px 0 0;font-size:14px;white-space:pre-line;color:#555">Pay to:\n${esc(s.bank)}</p>`:""}
   </div>
-  <div class="row noprint"><button class="g" onclick="togglePaid(${no})">Mark as ${i.paid==="Paid"?"unpaid":"paid"}</button><button class="g r" onclick="delInv(${no})">Delete invoice</button></div>`;
+  <div class="row wrap noprint">${b>0.005?`<button class="b" onclick="addPay(${no})">Add payment</button>`:""}<button class="g" onclick="shareInv(${no})">Share</button>${i.phone?`<button class="g" onclick="waInv(${no})">WhatsApp</button>`:""}</div>
+  <div class="row noprint" style="margin-top:8px"><button class="g r" onclick="delInv(${no})">Delete invoice</button></div>`;
   $("modal").style.display="block";
 }
 function closeInv(){$("modal").style.display="none";render()}
-async function togglePaid(no){const i=S.invoices.find(x=>x.no===no);i.paid=i.paid==="Paid"?"Unpaid":"Paid";await save();showInv(no)}
-async function delInv(no){if(confirm("Delete this invoice permanently?")){S.invoices=S.invoices.filter(x=>x.no!==no);await save();closeInv()}}
-async function shareInv(no){
+async function addPay(no){
+  const i=S.invoices.find(x=>x.no===no),b=balOf(i);
+  const a=parseFloat(prompt(`Balance is ${fmt(b)}. Amount received now:`,b));
+  if(isNaN(a)||a<=0)return;
+  const m=prompt("Payment method (Cash, Transfer, Card…)","Cash");if(m===null)return;
+  i.payments.push({amt:Math.min(a,b),date:new Date().toISOString(),method:m.trim()||"Cash"});
+  await save();showInv(no);
+}
+async function delPay(no,x){
+  if(!confirm("Remove this payment?"))return;
+  S.invoices.find(v=>v.no===no).payments.splice(x,1);await save();showInv(no);
+}
+async function delInv(no){
+  if(!confirm("Delete this invoice permanently? Stock will be returned."))return;
   const i=S.invoices.find(x=>x.no===no);
-  const text=`${S.settings.name}\nInvoice #${pad(i.no)} · ${dstr(i.date)}\nCustomer: ${i.cust}\n\n`+
-    i.items.map(x=>`${x.n}  ${x.q} × ${fmt(x.p)} = ${fmt(x.p*x.q)}`).join("\n")+
-    `\n\n`+(i.taxRate?`Tax (${i.taxRate}%): ${fmt(i.tax)}\n`:"")+`Total: ${fmt(i.total)}\nStatus: ${i.paid}`;
+  i.items.forEach(it=>{const p=S.products.find(x=>x.id===it.id);if(p&&p.stock!=="")p.stock+=it.q});
+  S.invoices=S.invoices.filter(x=>x.no!==no);await save();closeInv();
+}
+function invText(i){
+  return `${S.settings.name}\nInvoice #${pad(i.no)} · ${dstr(i.date)}\nCustomer: ${i.cust}\n\n`+
+    i.items.map(x=>`${x.n}  ${x.q} × ${fmt(x.p)} = ${fmt(x.p*x.q)}`).join("\n")+`\n\n`+
+    (i.disc?`Discount: −${fmt(i.disc)}\n`:"")+(i.taxRate?`Tax (${i.taxRate}%): ${fmt(i.tax)}\n`:"")+
+    `Total: ${fmt(i.total)}\nPaid: ${fmt(paidOf(i))}\n`+(balOf(i)>0.005?`Balance due: ${fmt(balOf(i))}`+(i.due?` by ${dstr(i.due)}`:"")+"\n":"Fully paid. Thank you!\n")+
+    (S.settings.bank&&balOf(i)>0.005?`\nPay to:\n${S.settings.bank}`:"");
+}
+async function shareInv(no){
+  const i=S.invoices.find(x=>x.no===no),text=invText(i);
   try{
     if(navigator.share)await navigator.share({title:`Invoice #${pad(i.no)}`,text});
     else{await navigator.clipboard.writeText(text);alert("Invoice text copied.")}
   }catch(e){}
 }
+function waInv(no){
+  const i=S.invoices.find(x=>x.no===no);
+  window.open("https://wa.me/"+i.phone.replace(/\D/g,"")+"?text="+encodeURIComponent(invText(i)),"_blank");
+}
 
 /* ---------- Backup / restore ---------- */
 function backup(){
-  const blob=new Blob([JSON.stringify({v:1,saved:new Date().toISOString(),products:S.products,invoices:S.invoices,settings:S.settings})],{type:"application/json"});
+  const blob=new Blob([JSON.stringify({v:2,saved:new Date().toISOString(),products:S.products,invoices:S.invoices,settings:S.settings})],{type:"application/json"});
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);
   a.download="sales-backup-"+new Date().toISOString().slice(0,10)+".json";document.body.appendChild(a);a.click();a.remove();
 }
@@ -217,7 +294,7 @@ $("restore").onchange=async e=>{
     const d=JSON.parse(await f.text());
     if(!Array.isArray(d.products)||!Array.isArray(d.invoices))throw 0;
     if(!confirm("This replaces all data on this phone with the backup. Continue?"))return;
-    S.products=d.products;S.invoices=d.invoices;S.settings=Object.assign(S.settings,d.settings||{});
+    S.products=d.products;S.invoices=d.invoices.map(mig);S.settings=Object.assign(S.settings,d.settings||{});
     await save();render();alert("Backup restored.");
   }catch(err){alert("That file is not a valid backup.")}
   e.target.value="";
@@ -226,7 +303,7 @@ $("restore").onchange=async e=>{
 /* ---------- Start ---------- */
 (async()=>{
   S.products=await DB.get("products",[]);
-  S.invoices=await DB.get("invoices",[]);
+  S.invoices=(await DB.get("invoices",[])).map(mig);
   S.settings=Object.assign(S.settings,await DB.get("settings",{}));
   render();
 })();
