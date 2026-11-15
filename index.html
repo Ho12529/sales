@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sales &amp; Invoices</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<style>
+:root{--bg:#eef2f1;--card:#fff;--ink:#16282c;--mute:#5d7075;--line:#d3dcdb;--brand:#0f766e;--onbrand:#fff;--warn:#b45309;--bad:#b91c1c;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1a1c;--card:#16262a;--ink:#e6efee;--mute:#93a8ab;--line:#2a3f43;--brand:#2dd4bf;--onbrand:#06201d;--warn:#fbbf24;--bad:#f87171;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding-top:env(safe-area-inset-top,0px);display:flex;flex-direction:column}
+header{padding:14px 16px 6px;font-weight:700;font-size:20px}
+main{flex:1;overflow-y:auto;padding:8px 16px 90px}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
+nav button{flex:1;border:0;background:none;color:var(--mute);padding:12px 4px;font:inherit;font-size:14px}
+nav button.on{color:var(--brand);font-weight:700;box-shadow:inset 0 3px 0 var(--brand)}
+label{display:block;margin:12px 0 4px;color:var(--mute);font-size:14px}
+input,select,textarea{width:100%;padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit}
+button.b{background:var(--brand);color:var(--onbrand);border:0;border-radius:8px;padding:11px 16px;font:inherit;font-weight:600}
+button.g{background:none;color:var(--brand);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit}
+button.r{color:var(--bad)}
+.row{display:flex;gap:8px;align-items:center}
+.row>*{flex:1}.row>.fix{flex:none}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin:10px 0}
+.li{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.li:last-child{border:0}
+.mute{color:var(--mute);font-size:14px}
+.tot{font-size:22px;font-weight:700}
+.tag{font-size:13px;font-weight:700}.paid{color:var(--brand)}.unpaid{color:var(--warn)}
+.empty{text-align:center;color:var(--mute);padding:30px 10px}
+#modal{display:none;position:fixed;inset:0;background:var(--bg);overflow-y:auto;padding:calc(12px + env(safe-area-inset-top,0px)) 16px 24px;z-index:5}
+#inv{background:#fff;color:#111;border-radius:10px;padding:18px;margin:12px 0}
+#inv table{width:100%;border-collapse:collapse;margin:12px 0}
+#inv th{text-align:left;border-bottom:2px solid #111;padding:6px 0;font-size:14px}
+#inv td{padding:6px 0;border-bottom:1px solid #ddd;vertical-align:top}
+#inv .n{text-align:right;white-space:nowrap;padding-left:8px}
+#inv .s{display:flex;justify-content:space-between;padding:3px 0}
+@media print{body>*:not(#modal){display:none!important}#modal{position:static;display:block!important;padding:0;background:#fff}.noprint{display:none!important}#inv{margin:0;padding:0}}
+</style>
+</head>
+<body>
+<header id="title">Sales</header>
+<main id="main"></main>
+<nav id="nav"></nav>
+<div id="modal"></div>
+<input type="file" id="restore" accept=".json,application/json" hidden>
+
+<script>
+"use strict";
+/* ---------- Storage (IndexedDB, on this phone only) ---------- */
+const DB={
+  open(){return new Promise((res,rej)=>{const r=indexedDB.open("salesdb",1);r.onupgradeneeded=()=>r.result.createObjectStore("kv");r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})},
+  async get(k,d){const db=await this.open();return new Promise(res=>{const q=db.transaction("kv").objectStore("kv").get(k);q.onsuccess=()=>res(q.result===undefined?d:q.result);q.onerror=()=>res(d)})},
+  async set(k,v){const db=await this.open();return new Promise((res,rej)=>{const t=db.transaction("kv","readwrite");t.objectStore("kv").put(v,k);t.oncomplete=res;t.onerror=()=>rej(t.error)})}
+};
+const S={products:[],invoices:[],settings:{name:"My Shop",info:"",cur:"$",tax:0,next:1}};
+let tab="sell",cart=[],draft={cust:"",paid:"Paid"};
+const save=()=>Promise.all([DB.set("products",S.products),DB.set("invoices",S.invoices),DB.set("settings",S.settings)]);
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
+
+/* ---------- Helpers ---------- */
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=n=>S.settings.cur+(+n||0).toFixed(2);
+const dstr=iso=>new Date(iso).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
+const totals=(items)=>{const sub=items.reduce((a,i)=>a+i.p*i.q,0),tax=sub*(+S.settings.tax||0)/100;return{sub,tax,total:sub+tax}};
+const pad=n=>String(n).padStart(4,"0");
+
+/* ---------- Views ---------- */
+const TABS=[["sell","New sale"],["inv","Invoices"],["prod","Products"],["set","Settings"]];
+function render(){
+  $("nav").innerHTML=TABS.map(([k,l])=>`<button class="${k===tab?"on":""}" onclick="go('${k}')">${l}</button>`).join("");
+  $("title").textContent=S.settings.name;
+  $("main").innerHTML=views[tab]();
+}
+function go(t){tab=t;render();$("main").scrollTop=0}
+
+const views={
+sell(){
+  const t=totals(cart);
+  const custs=[...new Set(S.invoices.map(i=>i.cust))].map(c=>`<option value="${esc(c)}">`).join("");
+  const opts=S.products.map(p=>`<option value="${p.id}">${esc(p.name)} (${fmt(p.price)})</option>`).join("");
+  return `
+  <label>Customer</label>
+  <input id="cust" list="cl" placeholder="Walk-in customer" value="${esc(draft.cust)}" oninput="draft.cust=this.value">
+  <datalist id="cl">${custs}</datalist>
+  <label>Add item</label>
+  <div class="row"><select id="ps">${opts}<option value="custom">Custom item…</option></select>
+  <input class="fix" id="qty" type="number" inputmode="decimal" value="1" min="0" step="any" style="width:76px">
+  <button class="b fix" onclick="addItem()">Add</button></div>
+  <div class="box">${cart.length?cart.map((i,x)=>`<div class="li"><div>${esc(i.n)}<div class="mute">${i.q} × ${fmt(i.p)}</div></div>
+    <div>${fmt(i.p*i.q)} <button class="g r" onclick="cart.splice(${x},1);render()">✕</button></div></div>`).join(""):`<div class="empty">No items yet. Choose a product and tap Add.</div>`}</div>
+  <div class="li"><span>Subtotal</span><span>${fmt(t.sub)}</span></div>
+  ${+S.settings.tax?`<div class="li"><span>Tax (${S.settings.tax}%)</span><span>${fmt(t.tax)}</span></div>`:""}
+  <div class="li"><span class="tot">Total</span><span class="tot">${fmt(t.total)}</span></div>
+  <label>Payment</label>
+  <select onchange="draft.paid=this.value"><option ${draft.paid==="Paid"?"selected":""}>Paid</option><option ${draft.paid==="Unpaid"?"selected":""}>Unpaid</option></select>
+  <p><button class="b" style="width:100%" onclick="saveInvoice()">Save invoice</button></p>`;
+},
+inv(){
+  if(!S.invoices.length)return `<div class="empty">No invoices yet. Make your first sale on the New sale tab.</div>`;
+  const paid=S.invoices.filter(i=>i.paid==="Paid").reduce((a,i)=>a+i.total,0),due=S.invoices.filter(i=>i.paid!=="Paid").reduce((a,i)=>a+i.total,0);
+  return `<div class="box row"><div><div class="mute">Paid</div><div class="tot">${fmt(paid)}</div></div><div><div class="mute">Unpaid</div><div class="tot" style="color:var(--warn)">${fmt(due)}</div></div></div>
+  <input placeholder="Search customer or number" oninput="filterInv(this.value)" style="margin-bottom:6px">
+  <div class="box" id="invlist">${invList("")}</div>`;
+},
+prod(){
+  return `<div class="box"><label style="margin-top:0">Product name</label><input id="pn">
+  <div class="row"><div><label>Price</label><input id="pp" type="number" inputmode="decimal" step="any"></div>
+  <div><label>Stock (optional)</label><input id="pst" type="number" inputmode="numeric" placeholder="Unlimited"></div></div>
+  <p><button class="b" onclick="addProduct()">Add product</button></p></div>
+  <div class="box">${S.products.length?S.products.map(p=>`<div class="li"><div>${esc(p.name)}<div class="mute">${fmt(p.price)}${p.stock===""?"":` · ${p.stock} in stock`}</div></div>
+  <div><button class="g" onclick="editProduct('${p.id}')">Edit</button> <button class="g r" onclick="delProduct('${p.id}')">Delete</button></div></div>`).join(""):`<div class="empty">No products yet. Add your first one above.</div>`}</div>`;
+},
+set(){const s=S.settings;return `
+  <label>Business name</label><input value="${esc(s.name)}" onchange="S.settings.name=this.value;save();render()">
+  <label>Address, phone, tax ID (shown on invoices)</label><textarea rows="3" onchange="S.settings.info=this.value;save()">${esc(s.info)}</textarea>
+  <div class="row"><div><label>Currency symbol</label><input value="${esc(s.cur)}" onchange="S.settings.cur=this.value;save()"></div>
+  <div><label>Tax %</label><input type="number" inputmode="decimal" step="any" value="${s.tax}" onchange="S.settings.tax=+this.value||0;save()"></div>
+  <div><label>Next invoice no.</label><input type="number" value="${s.next}" onchange="S.settings.next=+this.value||1;save()"></div></div>
+  <div class="box"><b>Backup</b><p class="mute">Your data lives only on this phone. Save a backup file regularly and keep it in Drive, email, or WhatsApp.</p>
+  <div class="row"><button class="b" onclick="backup()">Save backup</button><button class="g" onclick="$('restore').click()">Restore backup</button></div></div>`;}
+};
+
+function invList(q){
+  q=q.toLowerCase();
+  const l=S.invoices.slice().reverse().filter(i=>!q||i.cust.toLowerCase().includes(q)||pad(i.no).includes(q));
+  return l.length?l.map(i=>`<div class="li" onclick="showInv(${i.no})" style="cursor:pointer"><div>#${pad(i.no)} · ${esc(i.cust)}<div class="mute">${dstr(i.date)}</div></div>
+  <div style="text-align:right">${fmt(i.total)}<div class="tag ${i.paid==="Paid"?"paid":"unpaid"}">${i.paid}</div></div></div>`).join(""):`<div class="empty">No matches.</div>`;
+}
+function filterInv(v){$("invlist").innerHTML=invList(v)}
+
+/* ---------- Actions ---------- */
+function addItem(){
+  const v=$("ps").value,q=parseFloat($("qty").value)||1;
+  if(v==="custom"){
+    const n=prompt("Item name");if(!n)return;
+    const p=parseFloat(prompt("Price"));if(isNaN(p))return;
+    cart.push({n,p,q});
+  }else{
+    const pr=S.products.find(x=>x.id===v);if(!pr)return;
+    const ex=cart.find(i=>i.id===pr.id);
+    if(ex)ex.q+=q;else cart.push({id:pr.id,n:pr.name,p:pr.price,q});
+  }
+  render();
+}
+async function saveInvoice(){
+  if(!cart.length){alert("Add at least one item first.");return}
+  const t=totals(cart);
+  const inv={no:S.settings.next++,date:new Date().toISOString(),cust:draft.cust.trim()||"Walk-in customer",items:cart,sub:t.sub,tax:t.tax,taxRate:+S.settings.tax||0,total:t.total,paid:draft.paid};
+  cart.forEach(i=>{const p=S.products.find(x=>x.id===i.id);if(p&&p.stock!=="")p.stock=Math.max(0,p.stock-i.q)});
+  S.invoices.push(inv);cart=[];draft={cust:"",paid:"Paid"};
+  await save();render();showInv(inv.no);
+}
+function addProduct(){
+  const name=$("pn").value.trim(),price=parseFloat($("pp").value),st=$("pst").value;
+  if(!name||isNaN(price)){alert("Enter a name and a price.");return}
+  S.products.push({id:"p"+Date.now(),name,price,stock:st===""?"":+st});save();render();
+}
+function editProduct(id){
+  const p=S.products.find(x=>x.id===id);
+  const n=prompt("Name",p.name);if(n===null)return;
+  const pr=parseFloat(prompt("Price",p.price));if(isNaN(pr))return;
+  const st=prompt("Stock (leave blank for unlimited)",p.stock);if(st===null)return;
+  Object.assign(p,{name:n.trim()||p.name,price:pr,stock:st.trim()===""?"":+st});save();render();
+}
+function delProduct(id){if(confirm("Delete this product? Past invoices are not affected.")){S.products=S.products.filter(p=>p.id!==id);save();render()}}
+
+/* ---------- Invoice view ---------- */
+function showInv(no){
+  const i=S.invoices.find(x=>x.no===no);if(!i)return;
+  const s=S.settings;
+  $("modal").innerHTML=`
+  <div class="row noprint"><button class="g" onclick="closeInv()">Close</button><button class="b" onclick="window.print()">Print / PDF</button><button class="g" onclick="shareInv(${no})">Share</button></div>
+  <div id="inv">
+    <div style="display:flex;justify-content:space-between;gap:10px"><div><b style="font-size:20px">${esc(s.name)}</b><div style="white-space:pre-line;font-size:14px;color:#555">${esc(s.info)}</div></div>
+    <div style="text-align:right"><b>Invoice #${pad(i.no)}</b><div style="font-size:14px;color:#555">${dstr(i.date)}</div></div></div>
+    <p style="margin:14px 0 0"><span style="color:#555;font-size:14px">Billed to</span><br><b>${esc(i.cust)}</b></p>
+    <table><tr><th>Item</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Amount</th></tr>
+    ${i.items.map(x=>`<tr><td>${esc(x.n)}</td><td class="n">${x.q}</td><td class="n">${fmt(x.p)}</td><td class="n">${fmt(x.p*x.q)}</td></tr>`).join("")}</table>
+    <div class="s"><span>Subtotal</span><span>${fmt(i.sub)}</span></div>
+    ${i.taxRate?`<div class="s"><span>Tax (${i.taxRate}%)</span><span>${fmt(i.tax)}</span></div>`:""}
+    <div class="s" style="font-size:20px;font-weight:700;border-top:2px solid #111;margin-top:4px;padding-top:6px"><span>Total</span><span>${fmt(i.total)}</span></div>
+    <p style="margin-top:14px"><b>Status: ${i.paid}</b></p>
+  </div>
+  <div class="row noprint"><button class="g" onclick="togglePaid(${no})">Mark as ${i.paid==="Paid"?"unpaid":"paid"}</button><button class="g r" onclick="delInv(${no})">Delete invoice</button></div>`;
+  $("modal").style.display="block";
+}
+function closeInv(){$("modal").style.display="none";render()}
+async function togglePaid(no){const i=S.invoices.find(x=>x.no===no);i.paid=i.paid==="Paid"?"Unpaid":"Paid";await save();showInv(no)}
+async function delInv(no){if(confirm("Delete this invoice permanently?")){S.invoices=S.invoices.filter(x=>x.no!==no);await save();closeInv()}}
+async function shareInv(no){
+  const i=S.invoices.find(x=>x.no===no);
+  const text=`${S.settings.name}\nInvoice #${pad(i.no)} · ${dstr(i.date)}\nCustomer: ${i.cust}\n\n`+
+    i.items.map(x=>`${x.n}  ${x.q} × ${fmt(x.p)} = ${fmt(x.p*x.q)}`).join("\n")+
+    `\n\n`+(i.taxRate?`Tax (${i.taxRate}%): ${fmt(i.tax)}\n`:"")+`Total: ${fmt(i.total)}\nStatus: ${i.paid}`;
+  try{
+    if(navigator.share)await navigator.share({title:`Invoice #${pad(i.no)}`,text});
+    else{await navigator.clipboard.writeText(text);alert("Invoice text copied.")}
+  }catch(e){}
+}
+
+/* ---------- Backup / restore ---------- */
+function backup(){
+  const blob=new Blob([JSON.stringify({v:1,saved:new Date().toISOString(),products:S.products,invoices:S.invoices,settings:S.settings})],{type:"application/json"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+  a.download="sales-backup-"+new Date().toISOString().slice(0,10)+".json";document.body.appendChild(a);a.click();a.remove();
+}
+$("restore").onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  try{
+    const d=JSON.parse(await f.text());
+    if(!Array.isArray(d.products)||!Array.isArray(d.invoices))throw 0;
+    if(!confirm("This replaces all data on this phone with the backup. Continue?"))return;
+    S.products=d.products;S.invoices=d.invoices;S.settings=Object.assign(S.settings,d.settings||{});
+    await save();render();alert("Backup restored.");
+  }catch(err){alert("That file is not a valid backup.")}
+  e.target.value="";
+};
+
+/* ---------- Start ---------- */
+(async()=>{
+  S.products=await DB.get("products",[]);
+  S.invoices=await DB.get("invoices",[]);
+  S.settings=Object.assign(S.settings,await DB.get("settings",{}));
+  render();
+})();
+if("serviceWorker" in navigator)addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
+</script>
+</body>
+</html>
