@@ -80,6 +80,23 @@ const paidOf=i=>i.payments.reduce((a,p)=>a+p.amt,0);
 const balOf=i=>Math.max(0,i.total-paidOf(i));
 const statusOf=i=>balOf(i)<0.005?"Paid":paidOf(i)>0?"Part paid":"Unpaid";
 const sCls=s=>"s-"+s.split(" ")[0];
+function migP(p){p.perCarton=+p.perCarton||12;p.dozPrice=p.dozPrice??"";p.cartPrice=p.cartPrice??"";return p}
+function unitInfo(p,un){
+  if(un==="12")return{unit:"Dozen",u:12,p:p.dozPrice!==""?+p.dozPrice:p.price*12};
+  if(un==="C"){const n=+p.perCarton||1;return{unit:"Carton",u:n,p:p.cartPrice!==""?+p.cartPrice:p.price*n}}
+  return{unit:"Piece",u:1,p:p.price};
+}
+const ulabel=i=>i.u>1?`${i.unit.toLowerCase()} of ${i.u}`:"pc";
+const lineDesc=x=>x.u>1?`<div style="font-size:12px;color:#555">${x.unit} of ${x.u} pcs · ${x.q*x.u} pcs total</div>`:"";
+function pv(){
+  const el=$("pvw");if(!el)return;
+  const v=$("ps").value;
+  if(v==="custom"){el.textContent="Custom items are sold per piece.";return}
+  const p=S.products.find(x=>x.id===v);
+  if(!p){el.textContent="Add products first in the Products tab.";return}
+  const q=parseFloat($("qty").value)||0,w=unitInfo(p,$("un").value);
+  el.textContent=`${q} ${w.unit.toLowerCase()} = ${q*w.u} pcs · ${fmt(w.p)} each · ${fmt(w.p*q)}`;
+}
 function mig(i){ // upgrade invoices saved by the first version
   if(!i.payments)i.payments=i.paid==="Paid"?[{amt:i.total,date:i.date,method:"Cash"}]:[];
   i.disc=i.disc||0;i.phone=i.phone||"";i.due=i.due||"";i.note=i.note||"";return i;
@@ -90,7 +107,7 @@ const TABS=[["sell","Sell"],["inv","Invoices"],["cust","Customers"],["prod","Pro
 function render(){
   $("nav").innerHTML=TABS.map(([k,l])=>`<button class="${k===tab?"on":""}" onclick="go('${k}')">${l}</button>`).join("");
   $("title").textContent=S.settings.name;
-  $("main").innerHTML=views[tab]();
+  $("main").innerHTML=views[tab]();if(tab==="sell")pv();
 }
 function go(t){tab=t;render();$("main").scrollTop=0}
 
@@ -116,10 +133,12 @@ sell(){
   <div><label>Phone (with country code)</label><input type="tel" placeholder="optional" value="${esc(draft.phone)}" oninput="draft.phone=this.value"></div></div>
   <datalist id="cl">${custs}</datalist>
   <label>Add item</label>
-  <div class="row"><select id="ps">${opts}<option value="custom">Custom item…</option></select>
-  <input class="fix" id="qty" type="number" inputmode="decimal" value="1" min="0" step="any" style="width:76px">
+  <select id="ps" onchange="pv()">${opts}<option value="custom">Custom item…</option></select>
+  <div class="row" style="margin-top:8px"><select id="un" onchange="pv()"><option value="1">Piece</option><option value="12">Dozen (12 pcs)</option><option value="C">Carton</option></select>
+  <input class="fix" id="qty" type="number" inputmode="decimal" value="1" min="0" step="any" style="width:76px" oninput="pv()">
   <button class="b fix" onclick="addItem()">Add</button></div>
-  <div class="box">${cart.length?cart.map((i,x)=>`<div class="li"><div>${esc(i.n)}<div class="mute">${i.q} × ${fmt(i.p)}</div></div>
+  <div class="mute" id="pvw" style="margin-top:6px"></div>
+  <div class="box">${cart.length?cart.map((i,x)=>`<div class="li"><div>${esc(i.n)}<div class="mute">${i.q} × ${ulabel(i)} @ ${fmt(i.p)}</div></div>
     <div>${fmt(i.p*i.q)} <button class="g r" onclick="cart.splice(${x},1);render()">✕</button></div></div>`).join(""):`<div class="empty">No items yet. Choose a product and tap Add.</div>`}</div>
   <label>Discount (amount)</label><input type="number" inputmode="decimal" step="any" value="${esc(draft.disc)}" oninput="upd('disc',this.value)">
   <label>Deposit / amount paid now</label>
@@ -155,10 +174,14 @@ cust(){
 },
 prod(){
   return `<div class="box"><label style="margin-top:0">Product name</label><input id="pn">
-  <div class="row"><div><label>Price</label><input id="pp" type="number" inputmode="decimal" step="any"></div>
-  <div><label>Stock (optional)</label><input id="pst" type="number" inputmode="numeric" placeholder="Unlimited"></div></div>
+  <div class="row"><div><label>Price per piece</label><input id="pp" type="number" inputmode="decimal" step="any"></div>
+  <div><label>Pieces in a carton</label><input id="pc" type="number" inputmode="numeric" value="12"></div></div>
+  <div class="row"><div><label>Dozen price (optional)</label><input id="pd" type="number" inputmode="decimal" step="any" placeholder="auto: 12 × piece"></div>
+  <div><label>Carton price (optional)</label><input id="pk" type="number" inputmode="decimal" step="any" placeholder="auto: pieces × price"></div></div>
+  <label>Stock in pieces (optional)</label><input id="pst" type="number" inputmode="numeric" placeholder="Unlimited">
   <p><button class="b" onclick="addProduct()">Add product</button></p></div>
-  <div class="box">${S.products.length?S.products.map(p=>`<div class="li"><div>${esc(p.name)}<div class="mute">${fmt(p.price)}${p.stock===""?"":` · ${p.stock} in stock`}</div></div>
+  <div class="box">${S.products.length?S.products.map(p=>`<div class="li"><div>${esc(p.name)}<div class="mute">${fmt(p.price)} / pc · carton of ${p.perCarton}${p.dozPrice!==""?` · dozen ${fmt(p.dozPrice)}`:""}${p.cartPrice!==""?` · carton ${fmt(p.cartPrice)}`:""}</div>
+  ${p.stock===""?"":`<div class="mute">Stock: ${p.stock} pcs (${Math.floor(p.stock/p.perCarton)} cartons + ${p.stock%p.perCarton} pcs)</div>`}</div>
   <div><button class="g" onclick="editProduct('${p.id}')">Edit</button> <button class="g r" onclick="delProduct('${p.id}')">Delete</button></div></div>`).join(""):`<div class="empty">No products yet. Add your first one above.</div>`}</div>`;
 },
 set(){const s=S.settings;return `
@@ -186,11 +209,14 @@ function addItem(){
   if(v==="custom"){
     const n=prompt("Item name");if(!n)return;
     const p=parseFloat(prompt("Price"));if(isNaN(p))return;
-    cart.push({n,p,q});
+    cart.push({n,unit:"Piece",u:1,p,q});
   }else{
     const pr=S.products.find(x=>x.id===v);if(!pr)return;
-    const ex=cart.find(i=>i.id===pr.id);
-    if(ex)ex.q+=q;else cart.push({id:pr.id,n:pr.name,p:pr.price,q});
+    const w=unitInfo(pr,$("un").value);
+    const need=cart.filter(i=>i.id===pr.id).reduce((a,i)=>a+i.q*i.u,0)+q*w.u;
+    if(pr.stock!==""&&need>pr.stock&&!confirm(`Only ${pr.stock} pcs in stock. Add anyway?`))return;
+    const ex=cart.find(i=>i.id===pr.id&&i.unit===w.unit);
+    if(ex)ex.q+=q;else cart.push({id:pr.id,n:pr.name,unit:w.unit,u:w.u,p:w.p,q});
   }
   render();
 }
@@ -200,21 +226,25 @@ async function saveInvoice(){
   const now=new Date().toISOString();
   const inv={no:S.settings.next++,date:now,cust:draft.cust.trim()||"Walk-in customer",phone:draft.phone.trim(),items:cart,sub:t.sub,disc:t.disc,tax:t.tax,taxRate:+S.settings.tax||0,total:t.total,
     due:draft.due,note:draft.note.trim(),payments:pay>0?[{amt:pay,date:now,method:draft.method}]:[]};
-  cart.forEach(i=>{const p=S.products.find(x=>x.id===i.id);if(p&&p.stock!=="")p.stock=Math.max(0,p.stock-i.q)});
+  cart.forEach(i=>{const p=S.products.find(x=>x.id===i.id);if(p&&p.stock!=="")p.stock=Math.max(0,p.stock-i.q*(i.u||1))});
   S.invoices.push(inv);cart=[];draft=newDraft();
   await save();render();showInv(inv.no);
 }
 function addProduct(){
   const name=$("pn").value.trim(),price=parseFloat($("pp").value),st=$("pst").value;
-  if(!name||isNaN(price)){alert("Enter a name and a price.");return}
-  S.products.push({id:"p"+Date.now(),name,price,stock:st===""?"":+st});save();render();
+  if(!name||isNaN(price)){alert("Enter a name and a price per piece.");return}
+  const opt=id=>$(id).value===""?"":+$(id).value;
+  S.products.push({id:"p"+Date.now(),name,price,perCarton:+$("pc").value||12,dozPrice:opt("pd"),cartPrice:opt("pk"),stock:st===""?"":+st});save();render();
 }
 function editProduct(id){
-  const p=S.products.find(x=>x.id===id);
+  const p=S.products.find(x=>x.id===id),opt=s=>s===null||s.trim()===""?"":+s;
   const n=prompt("Name",p.name);if(n===null)return;
-  const pr=parseFloat(prompt("Price",p.price));if(isNaN(pr))return;
-  const st=prompt("Stock (leave blank for unlimited)",p.stock);if(st===null)return;
-  Object.assign(p,{name:n.trim()||p.name,price:pr,stock:st.trim()===""?"":+st});save();render();
+  const pr=parseFloat(prompt("Price per piece",p.price));if(isNaN(pr))return;
+  const pc=prompt("Pieces in a carton",p.perCarton);if(pc===null)return;
+  const dz=prompt("Dozen price (blank = automatic)",p.dozPrice);if(dz===null)return;
+  const ct=prompt("Carton price (blank = automatic)",p.cartPrice);if(ct===null)return;
+  const st=prompt("Stock in pieces (blank = unlimited)",p.stock);if(st===null)return;
+  Object.assign(p,{name:n.trim()||p.name,price:pr,perCarton:+pc||p.perCarton,dozPrice:opt(dz),cartPrice:opt(ct),stock:opt(st)});save();render();
 }
 function delProduct(id){if(confirm("Delete this product? Past invoices are not affected.")){S.products=S.products.filter(p=>p.id!==id);save();render()}}
 
@@ -229,7 +259,7 @@ function showInv(no){
     <div style="text-align:right"><b>Invoice #${pad(i.no)}</b><div style="font-size:14px;color:#555">${dstr(i.date)}</div></div></div>
     <p style="margin:14px 0 0"><span style="color:#555;font-size:14px">Billed to</span><br><b>${esc(i.cust)}</b>${i.phone?`<br><span style="font-size:14px;color:#555">${esc(i.phone)}</span>`:""}</p>
     <table><tr><th>Item</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Amount</th></tr>
-    ${i.items.map(x=>`<tr><td>${esc(x.n)}</td><td class="n">${x.q}</td><td class="n">${fmt(x.p)}</td><td class="n">${fmt(x.p*x.q)}</td></tr>`).join("")}</table>
+    ${i.items.map(x=>`<tr><td>${esc(x.n)}${lineDesc(x)}</td><td class="n">${x.q}</td><td class="n">${fmt(x.p)}</td><td class="n">${fmt(x.p*x.q)}</td></tr>`).join("")}</table>
     <div class="s"><span>Subtotal</span><span>${fmt(i.sub)}</span></div>
     ${i.disc?`<div class="s"><span>Discount</span><span>−${fmt(i.disc)}</span></div>`:""}
     ${i.taxRate?`<div class="s"><span>Tax (${i.taxRate}%)</span><span>${fmt(i.tax)}</span></div>`:""}
@@ -260,12 +290,12 @@ async function delPay(no,x){
 async function delInv(no){
   if(!confirm("Delete this invoice permanently? Stock will be returned."))return;
   const i=S.invoices.find(x=>x.no===no);
-  i.items.forEach(it=>{const p=S.products.find(x=>x.id===it.id);if(p&&p.stock!=="")p.stock+=it.q});
+  i.items.forEach(it=>{const p=S.products.find(x=>x.id===it.id);if(p&&p.stock!=="")p.stock+=it.q*(it.u||1)});
   S.invoices=S.invoices.filter(x=>x.no!==no);await save();closeInv();
 }
 function invText(i){
   return `${S.settings.name}\nInvoice #${pad(i.no)} · ${dstr(i.date)}\nCustomer: ${i.cust}\n\n`+
-    i.items.map(x=>`${x.n}  ${x.q} × ${fmt(x.p)} = ${fmt(x.p*x.q)}`).join("\n")+`\n\n`+
+    i.items.map(x=>`${x.n}${x.u>1?` [${x.unit} of ${x.u} pcs]`:""}  ${x.q} × ${fmt(x.p)} = ${fmt(x.p*x.q)}`).join("\n")+`\n\n`+
     (i.disc?`Discount: −${fmt(i.disc)}\n`:"")+(i.taxRate?`Tax (${i.taxRate}%): ${fmt(i.tax)}\n`:"")+
     `Total: ${fmt(i.total)}\nPaid: ${fmt(paidOf(i))}\n`+(balOf(i)>0.005?`Balance due: ${fmt(balOf(i))}`+(i.due?` by ${dstr(i.due)}`:"")+"\n":"Fully paid. Thank you!\n")+
     (S.settings.bank&&balOf(i)>0.005?`\nPay to:\n${S.settings.bank}`:"");
@@ -294,7 +324,7 @@ $("restore").onchange=async e=>{
     const d=JSON.parse(await f.text());
     if(!Array.isArray(d.products)||!Array.isArray(d.invoices))throw 0;
     if(!confirm("This replaces all data on this phone with the backup. Continue?"))return;
-    S.products=d.products;S.invoices=d.invoices.map(mig);S.settings=Object.assign(S.settings,d.settings||{});
+    S.products=d.products.map(migP);S.invoices=d.invoices.map(mig);S.settings=Object.assign(S.settings,d.settings||{});
     await save();render();alert("Backup restored.");
   }catch(err){alert("That file is not a valid backup.")}
   e.target.value="";
@@ -302,7 +332,7 @@ $("restore").onchange=async e=>{
 
 /* ---------- Start ---------- */
 (async()=>{
-  S.products=await DB.get("products",[]);
+  S.products=(await DB.get("products",[])).map(migP);
   S.invoices=(await DB.get("invoices",[])).map(mig);
   S.settings=Object.assign(S.settings,await DB.get("settings",{}));
   render();
