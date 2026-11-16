@@ -38,6 +38,7 @@ button.r{color:var(--bad)}
 .chip{flex:none;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:20px;padding:6px 14px;font:inherit;font-size:14px}
 .chip.on{background:var(--brand);color:var(--onbrand);border-color:var(--brand)}
 .pi{cursor:pointer}.pi.sel{background:var(--bg);box-shadow:inset 4px 0 0 var(--brand);padding-left:8px}
+#picker{display:none;position:fixed;inset:0;background:var(--bg);z-index:6;flex-direction:column;padding-top:env(safe-area-inset-top,0px)}
 #modal{display:none;position:fixed;inset:0;background:var(--bg);overflow-y:auto;padding:calc(12px + env(safe-area-inset-top,0px)) 16px 24px;z-index:5}
 #inv{background:#fff;color:#111;border-radius:10px;padding:18px;margin:12px 0}
 #inv table{width:100%;border-collapse:collapse;margin:12px 0}
@@ -53,6 +54,7 @@ button.r{color:var(--bad)}
 <main id="main"></main>
 <nav id="nav"></nav>
 <div id="modal"></div>
+<div id="picker"></div>
 <input type="file" id="restore" accept=".json,application/json" hidden>
 
 <script>
@@ -90,31 +92,56 @@ function unitInfo(p,un){
 }
 const ulabel=i=>i.u>1?`${i.unit.toLowerCase()} of ${i.u}`:"pc";
 const lineDesc=x=>x.u>1?`<div style="font-size:12px;color:#555">${x.unit} of ${x.u} pcs · ${x.q*x.u} pcs total</div>`:"";
-function catChips(){
-  CATS=[...new Set(S.products.map(p=>p.cat).filter(Boolean))].sort();
-  if(!CATS.length)return "";
-  return `<button class="chip ${pcat?"":"on"}" onclick="setCat(-1)">All</button>`+CATS.map((c,x)=>`<button class="chip ${pcat===c?"on":""}" onclick="setCat(${x})">${esc(c)}</button>`).join("");
+let PK={sel:{},q:"",cat:"",only:false,cnt:{},cats:[]};
+function openPicker(){
+  const cnt={};S.invoices.forEach(i=>i.items.forEach(x=>{if(x.id)cnt[x.id]=(cnt[x.id]||0)+x.q*(x.u||1)}));
+  PK={sel:{},q:"",cat:"",only:false,cnt,cats:[]};
+  $("picker").innerHTML=`<div class="row" style="padding:12px 16px 0"><button class="g fix" onclick="closePicker()">Cancel</button><b style="text-align:center">Select products</b><span class="fix" style="width:72px"></span></div>
+  <div style="padding:8px 16px 0"><input id="pks" type="search" placeholder="Search name, code or category…" oninput="PK.q=this.value;pkList()"><div class="chips" id="pkc"></div></div>
+  <div id="pkl" style="flex:1;overflow-y:auto;padding:0 16px 12px"></div>
+  <div id="pkb" style="padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line);background:var(--card)"></div>`;
+  $("picker").style.display="flex";pkChips();pkList();pkBar();
 }
-function plHtml(){
-  const q=pq.toLowerCase().trim(),cnt={};
-  S.invoices.forEach(i=>i.items.forEach(x=>{if(x.id)cnt[x.id]=(cnt[x.id]||0)+x.q*(x.u||1)}));
-  const l=S.products.filter(p=>(!pcat||p.cat===pcat)&&(!q||[p.name,p.code,p.cat].some(s=>String(s||"").toLowerCase().includes(q))))
-    .sort((a,b)=>(cnt[b.id]||0)-(cnt[a.id]||0)||a.name.localeCompare(b.name));
-  return (l.length?l.map(p=>`<div class="li pi ${p.id===selId?"sel":""}" onclick="pick('${p.id}')"><div>${esc(p.name)}<div class="mute">${esc([p.code,p.cat].filter(Boolean).join(" · "))}</div></div>
-    <div style="text-align:right">${fmt(p.price)}<div class="mute">${p.stock===""?"":p.stock<=0?'<span class="s-Unpaid">out of stock</span>':p.stock+" pcs"}</div></div></div>`).join(""):
-    `<div class="empty">${S.products.length?"No product matches.":"No products yet. Add them in the Products tab."}</div>`)+
-    `<div class="li pi ${selId==="custom"?"sel":""}" onclick="pick('custom')"><div>＋ Custom item (not in list)</div></div>`;
+function closePicker(){$("picker").style.display="none"}
+function pkChips(){
+  PK.cats=[...new Set(S.products.map(p=>p.cat).filter(Boolean))].sort();
+  const n=Object.keys(PK.sel).length;
+  $("pkc").innerHTML=`<button class="chip ${PK.only?"on":""}" onclick="PK.only=!PK.only;pkChips();pkList()">✓ Selected (${n})</button><button class="chip ${PK.cat?"":"on"}" onclick="PK.cat='';pkChips();pkList()">All</button>`+
+    PK.cats.map((c,x)=>`<button class="chip ${PK.cat===c?"on":""}" onclick="PK.cat=PK.cats[${x}];pkChips();pkList()">${esc(c)}</button>`).join("");
 }
-const pl=()=>{$("plist").innerHTML=plHtml()};
-function setCat(x){pcat=x<0?"":CATS[x];$("cats").innerHTML=catChips();pl()}
-function pick(id){selId=id;pl();pv();$("qty").focus();$("qty").select()}
-function pv(){
-  const el=$("pvw");if(!el)return;
-  if(selId==="custom"){el.textContent="Custom item, sold per piece. Tap Add to enter its name and price.";return}
-  const p=S.products.find(x=>x.id===selId);
-  if(!p){el.textContent="Tap a product above to select it.";return}
-  const q=parseFloat($("qty").value)||0,w=unitInfo(p,$("un").value);
-  el.innerHTML=`<b>${esc(p.name)}</b>: ${q} ${w.unit.toLowerCase()} = ${q*w.u} pcs · ${fmt(w.p)} each · ${fmt(w.p*q)}`;
+function pkLine(id){const p=S.products.find(x=>x.id===id),s=PK.sel[id],w=unitInfo(p,s.unit);return{total:w.p*s.q,pcs:w.u*s.q}}
+function pkList(){
+  const q=PK.q.toLowerCase().trim();
+  const l=S.products.filter(p=>(!PK.only||PK.sel[p.id])&&(!PK.cat||p.cat===PK.cat)&&(!q||[p.name,p.code,p.cat].some(s=>String(s||"").toLowerCase().includes(q))))
+    .sort((a,b)=>(PK.cnt[b.id]||0)-(PK.cnt[a.id]||0)||a.name.localeCompare(b.name));
+  $("pkl").innerHTML=l.length?l.map(p=>{const s=PK.sel[p.id],tag=[p.code,p.cat].filter(Boolean).join(" · ");
+    return `<div class="box" style="margin:6px 0;padding:10px"><div class="row" style="gap:12px;cursor:pointer" onclick="pkTick('${p.id}')">
+    <input type="checkbox" class="fix" style="width:24px;height:24px;pointer-events:none" ${s?"checked":""}>
+    <div>${esc(p.name)}<div class="mute">${tag?esc(tag)+" · ":""}${fmt(p.price)} / pc${p.stock===""?"":" · "+(p.stock<=0?"out of stock":p.stock+" pcs")}</div></div></div>
+    ${s?`<div class="row" style="margin-top:8px"><select onchange="pkUnit('${p.id}',this.value)">${[["1","Piece"],["12","Dozen (12)"],["C","Carton ("+p.perCarton+")"]].map(([v,t])=>`<option value="${v}" ${s.unit===v?"selected":""}>${t}</option>`).join("")}</select>
+    <input class="fix" type="number" inputmode="decimal" min="0" step="any" value="${s.q}" style="width:80px" oninput="pkQty('${p.id}',this.value)">
+    <b class="fix" id="lt_${p.id}" style="min-width:90px;text-align:right">${fmt(pkLine(p.id).total)}</b></div>`:""}</div>`}).join(""):`<div class="empty">${S.products.length?"No product matches.":"No products yet. Add them in the Products tab."}</div>`;
+}
+function pkTick(id){if(PK.sel[id])delete PK.sel[id];else PK.sel[id]={unit:"1",q:1};pkChips();pkList();pkBar()}
+function pkUnit(id,v){PK.sel[id].unit=v;$("lt_"+id).textContent=fmt(pkLine(id).total);pkBar()}
+function pkQty(id,v){PK.sel[id].q=parseFloat(v)||0;$("lt_"+id).textContent=fmt(pkLine(id).total);pkBar()}
+function pkBar(){
+  const ids=Object.keys(PK.sel);let pcs=0,tot=0;ids.forEach(id=>{const l=pkLine(id);pcs+=l.pcs;tot+=l.total});
+  $("pkb").innerHTML=`<div class="row"><div><b>${ids.length} selected</b><div class="mute">${pcs} pcs · ${fmt(tot)}</div></div>
+  <button class="g fix" onclick="PK.sel={};pkChips();pkList();pkBar()">Clear</button><button class="b fix" onclick="pkAdd()" ${ids.length?"":"disabled"}>Add to invoice</button></div>`;
+}
+function pkAdd(){
+  const ids=Object.keys(PK.sel).filter(id=>PK.sel[id].q>0);
+  if(!ids.length){alert("Set a quantity above zero.");return}
+  const low=[];
+  ids.forEach(id=>{const p=S.products.find(x=>x.id===id),s=PK.sel[id],w=unitInfo(p,s.unit);
+    const need=cart.filter(i=>i.id===id).reduce((a,i)=>a+i.q*i.u,0)+s.q*w.u;
+    if(p.stock!==""&&need>p.stock)low.push(`${p.name} (stock ${p.stock} pcs)`)});
+  if(low.length&&!confirm("Not enough stock for:\n"+low.join("\n")+"\n\nAdd anyway?"))return;
+  ids.forEach(id=>{const p=S.products.find(x=>x.id===id),s=PK.sel[id],w=unitInfo(p,s.unit);
+    const ex=cart.find(i=>i.id===id&&i.unit===w.unit);
+    if(ex)ex.q+=s.q;else cart.push({id,n:p.name,unit:w.unit,u:w.u,p:w.p,q:s.q})});
+  closePicker();render();
 }
 function mig(i){ // upgrade invoices saved by the first version
   if(!i.payments)i.payments=i.paid==="Paid"?[{amt:i.total,date:i.date,method:"Cash"}]:[];
@@ -126,7 +153,7 @@ const TABS=[["sell","Sell"],["inv","Invoices"],["cust","Customers"],["prod","Pro
 function render(){
   $("nav").innerHTML=TABS.map(([k,l])=>`<button class="${k===tab?"on":""}" onclick="go('${k}')">${l}</button>`).join("");
   $("title").textContent=S.settings.name;
-  $("main").innerHTML=views[tab]();if(tab==="sell")pv();
+  $("main").innerHTML=views[tab]();
 }
 function go(t){tab=t;if(t!=="prod")editId="";render();$("main").scrollTop=0}
 
@@ -151,16 +178,10 @@ sell(){
   <div class="row"><div><label>Customer</label><input id="cust" list="cl" placeholder="Walk-in customer" value="${esc(draft.cust)}" oninput="draft.cust=this.value"></div>
   <div><label>Phone (with country code)</label><input type="tel" placeholder="optional" value="${esc(draft.phone)}" oninput="draft.phone=this.value"></div></div>
   <datalist id="cl">${custs}</datalist>
-  <label>Add item</label>
-  <input id="psearch" type="search" placeholder="Search name, code or category…" value="${esc(pq)}" oninput="pq=this.value;pl()">
-  <div class="chips" id="cats">${catChips()}</div>
-  <div class="box" id="plist" style="max-height:250px;overflow-y:auto;padding:4px 12px">${plHtml()}</div>
-  <div class="row" style="margin-top:8px"><select id="un" onchange="pv()"><option value="1">Piece</option><option value="12">Dozen (12 pcs)</option><option value="C">Carton</option></select>
-  <input class="fix" id="qty" type="number" inputmode="decimal" value="1" min="0" step="any" style="width:76px" oninput="pv()">
-  <button class="b fix" onclick="addItem()">Add</button></div>
-  <div class="mute" id="pvw" style="margin-top:6px"></div>
-  <div class="box">${cart.length?cart.map((i,x)=>`<div class="li"><div>${esc(i.n)}<div class="mute">${i.q} × ${ulabel(i)} @ ${fmt(i.p)}</div></div>
-    <div>${fmt(i.p*i.q)} <button class="g r" onclick="cart.splice(${x},1);render()">✕</button></div></div>`).join(""):`<div class="empty">No items yet. Choose a product and tap Add.</div>`}</div>
+  <label>Items</label>
+  <div class="row"><button class="b" onclick="openPicker()">＋ Choose products</button><button class="g" onclick="addCustom()">Custom item</button></div>
+  <div class="box">${cart.length?cart.map((i,x)=>`<div class="li"><div>${esc(i.n)}<div class="mute">${ulabel(i)} @ ${fmt(i.p)}</div></div>
+    <div style="text-align:right"><div class="row" style="gap:6px"><input class="fix" type="number" inputmode="decimal" min="0" step="any" style="width:72px" value="${i.q}" onchange="cartQty(${x},this.value)"><button class="g r fix" onclick="cart.splice(${x},1);render()">✕</button></div><b>${fmt(i.p*i.q)}</b></div></div>`).join(""):`<div class="empty">No items yet. Choose a product and tap Add.</div>`}</div>
   <label>Discount (amount)</label><input type="number" inputmode="decimal" step="any" value="${esc(draft.disc)}" oninput="upd('disc',this.value)">
   <label>Deposit / amount paid now</label>
   <input type="number" inputmode="decimal" step="any" placeholder="0" value="${esc(draft.paid)}" oninput="upd('paid',this.value)">
@@ -229,23 +250,13 @@ function invList(){
 function custGo(x){invQ=CL[x].n;invF="all";go("inv")}
 
 /* ---------- Actions ---------- */
-function addItem(){
-  const v=selId,q=parseFloat($("qty").value)||1;
-  if(!v){alert("Tap a product in the list first.");return}
-  if(v==="custom"){
-    const n=prompt("Item name");if(!n)return;
-    const p=parseFloat(prompt("Price"));if(isNaN(p))return;
-    cart.push({n,unit:"Piece",u:1,p,q});
-  }else{
-    const pr=S.products.find(x=>x.id===v);if(!pr)return;
-    const w=unitInfo(pr,$("un").value);
-    const need=cart.filter(i=>i.id===pr.id).reduce((a,i)=>a+i.q*i.u,0)+q*w.u;
-    if(pr.stock!==""&&need>pr.stock&&!confirm(`Only ${pr.stock} pcs in stock. Add anyway?`))return;
-    const ex=cart.find(i=>i.id===pr.id&&i.unit===w.unit);
-    if(ex)ex.q+=q;else cart.push({id:pr.id,n:pr.name,unit:w.unit,u:w.u,p:w.p,q});
-  }
-  selId="";pq="";render();
+function addCustom(){
+  const n=prompt("Item name");if(!n)return;
+  const p=parseFloat(prompt("Price"));if(isNaN(p))return;
+  const q=parseFloat(prompt("Quantity","1"))||1;
+  cart.push({n,unit:"Piece",u:1,p,q});render();
 }
+function cartQty(x,v){const q=parseFloat(v);if(q>0)cart[x].q=q;render()}
 async function saveInvoice(){
   if(!cart.length){alert("Add at least one item first.");return}
   const t=totals(cart,draft.disc),pay=Math.min(+draft.paid||0,t.total);
